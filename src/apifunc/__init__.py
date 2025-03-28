@@ -32,7 +32,7 @@ except ImportError:
             logger.warning(f"PiFuncClient stub called for {service_name}")
             return {}
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 __all__ = ["service", "client", "run_services", "load_module_from_file", "PiFuncClient",
            "http", "websocket", "grpc", "mqtt", "zeromq", "redis", "amqp", "graphql", "cron"]
 
