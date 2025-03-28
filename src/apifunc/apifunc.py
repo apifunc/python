@@ -7,6 +7,7 @@ import inspect
 import logging
 import subprocess
 from typing import Any, Callable, Dict, List, Optional
+import threading
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -195,45 +196,13 @@ class ApiFuncFramework:
             logger.error(f"Failed to generate gRPC code: {e}")
             raise
 
-    def start_server(self, port: Optional[int] = None) -> grpc.Server:
-        """
-        Start the gRPC server
-
-        Args:
-            port: Port to listen on (overrides config)
-
-        Returns:
-            The gRPC server instance
-        """
-        port = port or self.config.port
-
-        self.server = grpc.server(futures.ThreadPoolExecutor(max_workers=self.config.max_workers))
-
-        # Add all registered services to the server
-        for service_name, service_info in self.services.items():
-            # Import the generated service module
-            module_name = f"{service_name}_pb2_grpc"
-            try:
-                service_module = importlib.import_module(module_name)
-            except ImportError:
-                # Try with full path
-                full_module_name = f"{os.path.basename(self.config.generated_dir)}.{module_name}"
-                service_module = importlib.import_module(full_module_name)
-
-            # Create service implementation
-            component = service_info['component']
-            service_class = self._create_service_class(service_name, component)
-
-            # Add service to server
-            getattr(service_module, f"add_{service_name.capitalize()}ServiceServicer_to_server")(
-                service_class(), self.server
-            )
-
-        self.server.add_insecure_port(f'[::]:{port}')
-        self.server.start()
-
-        logger.info(f"Server started on port {port}")
-        return self.server
+    def start_server(self):
+        """Start the gRPC server in a background thread"""
+        server = self._create_server()
+        server_thread = threading.Thread(target=server.start)
+        server_thread.daemon = True  # Make thread exit when main thread exits
+        server_thread.start()
+        return server
 
     def _create_service_class(self, service_name: str, component) -> type:
         """

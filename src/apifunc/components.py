@@ -2,6 +2,7 @@
 Component definitions for ApiFuncFramework
 """
 
+import time
 import inspect
 import logging
 from typing import Any, Callable, Dict, Optional
