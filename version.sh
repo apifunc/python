@@ -6,7 +6,7 @@ rm -rf build
 
 # Zainstaluj w trybie edytowalnym
 pip install -e .
-python increment_init.py -f src/pifunc/__init__.py
+python increment_init.py -f src/apifunc/__init__.py
 python increment_setup.py
 python changelog.py
 #python increment.py

@@ -29,7 +29,7 @@ echo -e "${GREEN}Update version in setup.py...${NC}"
 VERSION_SETUP=$(python setup.py --version)
 #sed -i "s/$VERSION_SETUP/$VERSION_CHANGELOG/" setup.py
 #sed -i "s/$VERSION_SETUP/$VERSION_CHANGELOG/" setup.cfg
-sed -i "s/$VERSION_SETUP/$VERSION_CHANGELOG/" src/pifunc/__init__.py
+sed -i "s/$VERSION_SETUP/$VERSION_CHANGELOG/" src/apifunc/__init__.py
 
 echo -e "${GREEN}push changes...${NC}"
 ./git.sh
