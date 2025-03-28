@@ -34,8 +34,9 @@ def main():
         }
 
         # Create pipeline components
-        json_html_component = DynamicgRPCComponent(json_to_html)
-        html_pdf_component = DynamicgRPCComponent(html_to_pdf)
+        # Przykład użycia z określonym portem
+        json_html_component = DynamicgRPCComponent(json_to_html, port=50051)
+        html_pdf_component = DynamicgRPCComponent(html_to_pdf, port=50052)
 
         # Create and execute pipeline
         pipeline = PipelineOrchestrator()

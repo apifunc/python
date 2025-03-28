@@ -21,6 +21,9 @@ pip install grpcio grpcio-tools
 ```bash
 python grpc-scan.py --hosts "localhost" --start 8000 --end 9000 --concurrency 50
 ```
+```bash
+ python grpc-scan.py --hosts "localhost" --continuous --verbose --start 50051 --end 50052 --concurrency 2
+```
 
 Parametry:
 - `--hosts` lub `-H`: lista hostów do skanowania (oddzielone przecinkami)
