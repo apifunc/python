@@ -12,6 +12,8 @@ from jinja2 import Template
 import weasyprint
 from google.protobuf.struct_pb2 import Struct
 import google.protobuf
+import time
+import threading
 
 
 class ApiFuncConfig:
@@ -111,14 +113,12 @@ class ApiFuncFramework:
         self.logger.info(f"Generated gRPC code for: {func.__name__}")
 
         # Get the path to the directory containing struct.proto
-        protobuf_include = os.path.dirname(google.protobuf.__path__[0])
-
-        # Combine include paths into a single string
-        include_paths = f"-I{proto_dir} -I{protobuf_include}"
+        protobuf_include = os.path.dirname(google.protobuf.__file__)
 
         protoc_args = [
             'grpc_tools.protoc',
-            include_paths,  # Use the combined include paths
+            f'-I{proto_dir}',  # Pass each include path as a separate -I argument
+            f'-I{protobuf_include}',  # Pass each include path as a separate -I argument
             f'--python_out={generated_dir}',
             f'--grpc_python_out={generated_dir}',
             proto_file_path
@@ -141,7 +141,7 @@ class ApiFuncFramework:
         server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
         return server
 
-    def start_server(self, func: Callable, proto_dir: str, generated_dir: str):
+    def start_server(self, func: Callable, proto_dir: str, generated_dir: str, port: int):
         """
         Start the gRPC server.
 
@@ -149,11 +149,12 @@ class ApiFuncFramework:
             func (Callable): The function to start the server for.
             proto_dir (str): Directory for proto files.
             generated_dir (str): Directory for generated code.
+            port (int): The port to listen on.
         """
         self.logger.info(f"Starting server for: {func.__name__}")
         server = self._create_server()
         self._add_servicer_to_server(server, func, generated_dir)
-        server.add_insecure_port(f'[::]:{self.config.port}')
+        server.add_insecure_port(f'[::]:{port}')
         server.start()
         return server
 
@@ -198,7 +199,7 @@ class DynamicgRPCComponent:
     Dynamic gRPC component for the pipeline.
     """
 
-    def __init__(self, transform_func: Callable, proto_dir: str, generated_dir: str):
+    def __init__(self, transform_func: Callable, proto_dir: str, generated_dir: str, port: int):
         """
         Initialize the DynamicgRPCComponent.
 
@@ -206,12 +207,15 @@ class DynamicgRPCComponent:
             transform_func (Callable): The transformation function.
             proto_dir (str): Directory for proto files.
             generated_dir (str): Directory for generated code.
+            port (int): The port for the gRPC server.
         """
         self.transform_func = transform_func
         self.proto_dir = proto_dir
         self.generated_dir = generated_dir
         self.logger = logging.getLogger(__name__)
         self.grpc_module = self._load_grpc_module()
+        self.port = port
+        self.server = None
 
     def _load_grpc_module(self):
         """
@@ -243,6 +247,13 @@ class DynamicgRPCComponent:
         """
         return self.transform_func(data)
 
+    def start_grpc_server(self):
+        config = ApiFuncConfig(port=self.port)
+        framework = ApiFuncFramework(config)
+        framework.register_function(self.transform_func, self.proto_dir, self.generated_dir)
+        self.server = framework.start_server(self.transform_func, self.proto_dir, self.generated_dir, self.port)
+        return self.server
+
 
 class PipelineOrchestrator:
     """
@@ -254,6 +265,7 @@ class PipelineOrchestrator:
         Initialize the PipelineOrchestrator.
         """
         self.components: List[DynamicgRPCComponent] = []
+        self.servers: List[grpc.Server] = []
 
     def add_component(self, component: DynamicgRPCComponent):
         """
@@ -282,9 +294,17 @@ class PipelineOrchestrator:
 
         return current_data
 
+    def start_servers(self):
+        for component in self.components:
+            server = component.start_grpc_server()
+            self.servers.append(server)
 
-# Przykładowe komponenty transformacji
-def json_to_html(json_data: Dict) -> str:
+    def stop_servers(self):
+        for server in self.servers:
+            server.stop(0)
+
+
+# Przykson_data: Dict) -> str:
     """
     Transformacja JSON do HTML
     """
@@ -317,10 +337,12 @@ def html_to_pdf(html_content: str) -> bytes:
 
 def example_usage(output_file: str = 'raport.pdf'):
     """
-    Przykładowe użycie modularnego frameworka pipeline
+    Przykżycie modularnego frameworka pipeline
     """
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
+
+    logger.info("Starting the apifunc example pipeline with two services...")
 
     sample_data = {
         "nazwa": "Przykładowy Raport",
@@ -328,23 +350,67 @@ def example_usage(output_file: str = 'raport.pdf'):
         "wartość": 123.45
     }
 
+    proto_dir_json_html = os.path.abspath("./proto/json_html")
+    generated_dir_json_html = os.path.abspath("./generated/json_html")
+    proto_dir_html_pdf = os.path.abspath("./proto/html_pdf")
+    generated_dir_html_pdf = os.path.abspath("./generated/html_pdf")
+
+    logger.info(f"Proto files directory: {proto_dir_json_html}")
+    logger.info(f"Generated code directory: {generated_dir_json_html}")
+    logger.info(f"Proto files directory: {proto_dir_html_pdf}")
+    logger.info(f"Generated code directory: {generated_dir_html_pdf}")
+
     # Tworzenie komponentów
-    json_to_html_component = DynamicgRPCComponent(json_to_html, proto_dir=os.path.abspath("./proto/json_html"),
-                                                  generated_dir=os.path.abspath("./generated/json_html"))
-    html_to_pdf_component = DynamicgRPCComponent(html_to_pdf, proto_dir=os.path.abspath("./proto/html_pdf"),
-                                                 generated_dir=os.path.abspath("./generated/html_pdf"))
+    json_to_html_component = DynamicgRPCComponent(json_to_html, proto_dir=proto_dir_json_html,
+                                                  generated_dir=generated_dir_json_html, port=50051)
+    html_to_pdf_component = DynamicgRPCComponent(html_to_pdf, proto_dir=proto_dir_html_pdf,
+                                                 generated_dir=generated_dir_html_pdf, port=50052)
 
     # Tworzenie orkiestratora
     pipeline = PipelineOrchestrator()
 
-    # Dodawanie komponentów do potoku
+    # Dodawanie komponentdo potoku
     pipeline.add_component(json_to_html_component).add_component(html_to_pdf_component)
 
+    # Start the servers in separate threads
+    pipeline.start_servers()
+
+    logger.info(f"Starting JSON-to-HTML server on port 50051")
+    logger.info(f"Starting HTML-to-PDF server on port 50052")
+
+    # Run the servers in background threads
+    def run_server(server, name):
+        try:
+            server.wait_for_termination()
+        except Exception as e:
+            logger.error(f"{name} server error: {e}")
+
+    threads = []
+    for i, server in enumerate(pipeline.servers):
+        thread = threading.Thread(target=run_server, args=(server, f"Server {i+1}"))
+        threads.append(thread)
+        thread.start()
+        logger.info(f"Server {i+1} running in background thread")
+
+    try:
+        # Keep the main thread alive
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("All services have been shut down.")
+        pipeline.stop_servers()
+        for thread in threads:
+            thread.join()
+
     # Wykonanie potoku
-    result = pipeline.execute_pipeline(sample_data)
+    # result = pipeline.execute_pipeline(sample_data)
 
     # Zapis do pliku
-    with open(output_file, 'wb') as f:
-        f.write(result)
+    # with open(output_file, 'wb') as f:
+    #     f.write(result)
 
-    logger.info(f"Raport zapisany do pliku: {output_file}")
+    # logger.info(f"Raport zapisany do pliku: {output_file}")
+
+
+if __name__ == "__main__":
+    example_usage()
