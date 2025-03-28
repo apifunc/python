@@ -113,16 +113,23 @@ class ApiFuncFramework:
         # Get the path to the directory containing struct.proto
         protobuf_include = os.path.dirname(google.protobuf.__path__[0])
 
+        # Combine include paths into a single string
+        include_paths = f"-I{proto_dir} -I{protobuf_include}"
+
         protoc_args = [
             'grpc_tools.protoc',
-            f'-I{proto_dir}',
-            f'-I{protobuf_include}',  # Add the include path for struct.proto
+            include_paths,  # Use the combined include paths
             f'--python_out={generated_dir}',
             f'--grpc_python_out={generated_dir}',
             proto_file_path
         ]
 
-        grpc_tools.protoc.main(protoc_args)
+        # Execute protoc command
+        try:
+            grpc_tools.protoc.main(protoc_args)
+        except SystemExit as e:
+            if e.code != 0:
+                raise RuntimeError(f"protoc failed with exit code {e.code}") from e
 
     def _create_server(self):
         """
