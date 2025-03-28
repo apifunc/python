@@ -4,6 +4,7 @@ import inspect
 import importlib
 import json
 from typing import Any, Dict, List, Optional, Callable, Type
+import logging
 
 import grpc
 from concurrent import futures
@@ -200,35 +201,37 @@ def example_usage():
     """
     Przykładowe użycie modularnego frameworka pipeline
     """
-    # Dane przykładowe
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+
     sample_data = {
         "nazwa": "Przykładowy Raport",
         "wartość": 1000,
         "kategoria": "Sprzedaż"
     }
 
-    # Utworzenie komponentów z dynamicznym interfejsem gRPC
-    json_to_html_component = DynamicgRPCComponent(json_to_html)
-    html_to_pdf_component = DynamicgRPCComponent(html_to_pdf)
-
-    # Utworzenie orkiestratora
-    pipeline = PipelineOrchestrator()
-    pipeline.add_component(json_to_html_component)
-    pipeline.add_component(html_to_pdf_component)
-
-    # Wykonanie potoku
     try:
+        # Utworzenie komponentów
+        json_to_html_component = DynamicgRPCComponent(json_to_html)
+        html_to_pdf_component = DynamicgRPCComponent(html_to_pdf)
+
+        # Utworzenie i konfiguracja potoku
+        pipeline = PipelineOrchestrator()
+        pipeline.add_component(json_to_html_component).add_component(html_to_pdf_component)
+
+        # Wykonanie potoku
         result = pipeline.execute_pipeline(sample_data)
-        print("Przetwarzanie zakończone sukcesem")
+        logger.info("Przetwarzanie zakończone sukcesem")
 
         # Zapis pliku PDF
-        with open('raport.pdf', 'wb') as f:
+        output_file = 'raport.pdf'
+        with open(output_file, 'wb') as f:
             f.write(result)
 
-        print("Plik PDF został zapisany")
+        logger.info(f"Plik PDF został zapisany: {output_file}")
 
     except Exception as e:
-        print(f"Błąd przetwarzania: {e}")
+        logger.error(f"Błąd przetwarzania: {e}")
 
 
 if __name__ == "__main__":
