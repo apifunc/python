@@ -4,7 +4,6 @@ import time
 import grpc
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from google.protobuf.descriptor_pb2 import FileDescriptorSet
 from grpc_reflection.v1alpha import reflection_pb2, reflection_pb2_grpc
 
 def quick_port_check(host, port):
@@ -22,7 +21,7 @@ def scan_port(host, port, verbose=False):
     if not quick_port_check(host, port):
         return None
 
-    # Only try gRPC connection if TCP port is open
+    # If port is open, consider it a potential gRPC service
     try:
         # Use very short timeouts for gRPC
         options = [
@@ -46,13 +45,9 @@ def scan_port(host, port, verbose=False):
         try:
             # List services using reflection with timeout
             request = reflection_pb2.ServerReflectionRequest(list_services="")
-            # Use a generator with timeout to avoid blocking
-            def request_generator():
-                yield request
-                # Add a short timeout by yielding and then stopping
-                time.sleep(0.1)
 
-            responses = stub.ServerReflection(request_generator())
+            # The correct method is ServerReflectionInfo, not ServerReflection
+            responses = stub.ServerReflectionInfo(iter([request]))
 
             # Only process the first response with a timeout
             for response in responses:
@@ -65,7 +60,15 @@ def scan_port(host, port, verbose=False):
         except Exception as e:
             if verbose:
                 print(f"Error listing services on {host}:{port} - {str(e)}")
-            return None
+
+            # Even if we can't list services, if the port is open and accepts gRPC connections,
+            # we'll consider it a gRPC service for the purpose of stop-on-first
+            return {
+                "host": host,
+                "port": port,
+                "services": ["<Unable to list services via reflection>"],
+                "error": str(e)
+            }
 
         if services:
             return {
@@ -182,6 +185,8 @@ def main():
             print("\nFound gRPC services:")
             for service in found_services:
                 print(f"\n{service['host']}:{service['port']}")
+                if "error" in service:
+                    print(f"  Error: {service['error']}")
                 for svc in service['services']:
                     print(f"  - {svc}")
 
@@ -193,9 +198,10 @@ def main():
 
         scan_time = time.time() - start_time
         print(f"\nScan completed in {scan_time:.2f} seconds")
-        print(f"Average scan rate: {total_ports/scan_time:.2f} ports/second")
+        if scan_time > 0:
+            print(f"Average scan rate: {total_ports/scan_time:.2f} ports/second")
 
-        # If not continuous or (continuous and not stop_on_first), we're done
+        # If not continuous, we're done
         if not args.continuous:
             break
 
