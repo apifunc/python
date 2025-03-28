@@ -9,15 +9,11 @@ import logging
 import grpc
 from concurrent import futures
 import grpc_tools.protoc
+from jinja2 import Template
+import weasyprint
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
-# from apifunc.apifunc import (
-#     json_to_html,
-#     html_to_pdf,
-#     DynamicgRPCComponent,
-#     PipelineOrchestrator,
-# )
+# sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
 class ModularPipelineInterface:
     """
@@ -192,7 +188,6 @@ def json_to_html(json_data: Dict) -> str:
     </html>
     """
 
-    from jinja2 import Template
     template = Template(html_template)
     return template.render(data=json_data)
 
@@ -201,8 +196,37 @@ def html_to_pdf(html_content: str) -> bytes:
     """
     Konwersja HTML do PDF
     """
-    import weasyprint
     return weasyprint.HTML(string=html_content).write_pdf()
 
-if __name__ == "__main__":
-    example_usage()
+
+def example_usage(output_file: str = 'raport.pdf'):
+    """
+    Przykładowe użycie modularnego frameworka pipeline
+    """
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+
+    sample_data = {
+        "nazwa": "Przykładowy Raport",
+        "data": "2023-11-20",
+        "wartość": 123.45
+    }
+
+    # Tworzenie komponentów
+    json_to_html_component = DynamicgRPCComponent(json_to_html)
+    html_to_pdf_component = DynamicgRPCComponent(html_to_pdf)
+
+    # Tworzenie orkiestratora
+    pipeline = PipelineOrchestrator()
+
+    # Dodawanie komponentów do potoku
+    pipeline.add_component(json_to_html_component).add_component(html_to_pdf_component)
+
+    # Wykonanie potoku
+    result = pipeline.execute_pipeline(sample_data)
+
+    # Zapis do pliku
+    with open(output_file, 'wb') as f:
+        f.write(result)
+
+    logger.info(f"Raport zapisany do pliku: {output_file}")
