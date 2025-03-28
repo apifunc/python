@@ -19,7 +19,7 @@ pip install grpcio grpcio-tools
 ### Jak używać:
 
 ```bash
-python grpc-scan.py --hosts "192.168.1.10,192.168.1.11" --start 8000 --end 9000 --concurrency 50
+python grpc-scan.py --hosts "localhost" --start 8000 --end 9000 --concurrency 50
 ```
 
 Parametry:
@@ -28,4 +28,26 @@ Parametry:
 - `--end` lub `-e`: końcowy port zakresu (domyślnie 50100)
 - `--concurrency` lub `-c`: maksymalna liczba równoległych skanów (domyślnie 50)
 
-Skaner będzie wykrywał tylko usługi gRPC, które mają włączoną refleksję, co jest typowe dla środowisk deweloperskich, ale może być wyłączone w środowiskach produkcyjnych ze względów bezpieczeństwa.
+
+### Zmiany w stosunku do poprzedniej wersji:
+
+1. Usunąłem wszystkie elementy związane z `asyncio` i `grpc.aio`
+2. Zamiast tego wykorzystałem `ThreadPoolExecutor` do równoległego skanowania
+3. Dodałem wstępne sprawdzenie połączenia TCP, aby szybciej przeskakiwać zamknięte porty
+4. Poprawiłem obsługę wyjątków, aby lepiej radzić sobie z różnymi wersjami gRPC
+
+### Jak zainstalować wymagane pakiety:
+
+```bash
+pip install grpcio grpcio-reflection
+```
+
+### Jak użyć:
+
+```bash
+python grpc-scan.py --hosts "192.168.188.226"
+```
+
+Ta wersja powinna być bardziej kompatybilna z różnymi instalacjami Pythona i nie wymaga nowszych wersji gRPC, które obsługują asyncio. Skaner nadal efektywnie skanuje wiele portów równolegle, ale używa wątków zamiast asynchroniczności.
+
+Czy chciałbyś, żebym wprowadził jakieś dodatkowe modyfikacje do tego kodu?

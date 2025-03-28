@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 import argparse
+import socket
 import sys
 import time
-import socket
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Optional, Dict
+from typing import List, Dict, Any, Set, Tuple
 
 import grpc
-from grpc._channel import _Rendezvous
+from grpc_reflection.v1alpha import reflection_pb2, reflection_pb2_grpc
 
 
 # Potrzebne będą pakiety:
@@ -23,156 +23,136 @@ class GrpcServiceInfo:
         return f"{self.address}:{self.port} - {len(self.services)} usług"
 
 
-def scan_grpc_service(host: str, port: int, timeout: int = 3) -> Optional[GrpcServiceInfo]:
-    """Skanuje pojedynczy port pod kątem usług gRPC z włączoną refleksją"""
-    target = f"{host}:{port}"
+def parse_args():
+    parser = argparse.ArgumentParser(description='Scan for gRPC services')
+    parser.add_argument('--hosts', '-H', type=str, default='localhost',
+                        help='Comma-separated list of hosts to scan')
+    parser.add_argument('--start', '-s', type=int, default=50000,
+                        help='Start port for scanning range')
+    parser.add_argument('--end', '-e', type=int, default=50100,
+                        help='End port for scanning range')
+    parser.add_argument('--concurrency', '-c', type=int, default=50,
+                        help='Maximum number of concurrent scans')
+    parser.add_argument('--continuous', action='store_true',
+                        help='Continuously scan until a service is found')
+    return parser.parse_args()
 
-    # Najpierw sprawdź, czy port jest w ogóle otwarty, aby uniknąć długiego oczekiwania
+def is_port_open(host: str, port: int) -> bool:
+    """Quick check if a port is open using TCP socket."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(1)
-    result = sock.connect_ex((host, port))
-    sock.close()
+    sock.settimeout(0.5)
+    try:
+        result = sock.connect_ex((host, port))
+        return result == 0
+    except socket.error:
+        return False
+    finally:
+        sock.close()
 
-    if result != 0:
-        # Port jest zamknięty, nie ma sensu sprawdzać gRPC
-        return None
+def scan_grpc_port(host: str, port: int) -> Tuple[bool, List[str]]:
+    """Scan a specific port for gRPC services using reflection."""
+    if not is_port_open(host, port):
+        return False, []
 
     try:
-        # Tworzymy kanał komunikacji z serwerem gRPC
-        options = [('grpc.enable_http_proxy', 0)]
-        channel = grpc.insecure_channel(target, options=options)
+        channel = grpc.insecure_channel(f"{host}:{port}")
+        # Set a deadline for connection attempts
+        try:
+            grpc.channel_ready_future(channel).result(timeout=2)
+        except grpc.FutureTimeoutError:
+            channel.close()
+            return False, []
 
-        # Dodajemy timeout
-        grpc.channel_ready_future(channel).result(timeout=timeout)
+        # Try to use reflection to list services
+        stub = reflection_pb2_grpc.ServerReflectionStub(channel)
+        services = []
 
         try:
-            # Importujemy reflection dopiero tutaj, aby uniknąć błędów importu
-            from grpc_reflection.v1alpha.reflection_pb2 import ServerReflectionRequest
-            from grpc_reflection.v1alpha.reflection_pb2_grpc import ServerReflectionStub
+            # List services using reflection
+            request = reflection_pb2.ServerReflectionRequest(
+                list_services=""
+            )
+            responses = stub.ServerReflection(iter([request]))
 
-            # Tworzymy klienta refleksji
-            stub = ServerReflectionStub(channel)
-
-            # Przygotowujemy zapytanie o listę usług
-            request = ServerReflectionRequest(list_services="")
-
-            # Wykonujemy zapytanie (synchronicznie)
-            responses = list(stub.ServerReflection([request]))
-
-            # Przetwarzamy odpowiedź
-            services = []
             for response in responses:
                 if response.HasField("list_services_response"):
-                    services = [service.name for service in response.list_services_response.service]
+                    for service in response.list_services_response.service:
+                        services.append(service.name)
                     break
 
-            # Zamykamy kanał
             channel.close()
-
-            # Jeśli znaleźliśmy usługi, zwracamy informacje
             if services:
-                return GrpcServiceInfo(host, port, services)
-
-        except ImportError:
-            print("Brak modułu grpc_reflection. Zainstaluj go używając: pip install grpcio-reflection", file=sys.stderr)
-            sys.exit(1)
-
-    except grpc.FutureTimeoutError:
-        # Timeout - port otwarty, ale to nie jest serwer gRPC
-        pass
-    except (grpc.RpcError, _Rendezvous) as e:
-        # RpcError - ignorujemy, oznacza najczęściej brak usługi gRPC
-        pass
+                return True, services
+            return False, []
+        except grpc.RpcError:
+            channel.close()
+            return False, []
     except Exception as e:
-        if "Channel closed!" not in str(e):  # Ignorujemy błędy zamknięcia kanału
-            print(f"Błąd podczas skanowania {target}: {str(e)}", file=sys.stderr)
+        return False, []
 
-    return None
+def scan_once(hosts, port_range, concurrency):
+    """Perform one complete scan of all hosts and ports."""
+    found_services = {}
 
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = []
 
-def scan_port_range(host: str, start_port: int, end_port: int, max_workers: int) -> List[GrpcServiceInfo]:
-    """Skanuje zakres portów równolegle z ograniczeniem współbieżności"""
-    results = []
-    ports = range(start_port, end_port + 1)
+        for host in hosts:
+            for port in port_range:
+                futures.append(executor.submit(scan_grpc_port, host, port))
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Funkcja pomocnicza do wyświetlania wyników w miarę ich znajdowania
-        def process_result(port, future):
-            result = future.result()
-            if result:
-                print(f"Znaleziono usługi gRPC na {host}:{port}")
-                for service in result.services:
-                    print(f"  - {service}")
-                results.append(result)
+        for i, future in enumerate(futures):
+            host_idx = i // len(port_range)
+            port_idx = i % len(port_range)
+            host = hosts[host_idx]
+            port = port_range[port_idx]
 
-        # Uruchamiamy zadania skanowania portów
-        futures = {}
-        for port in ports:
-            future = executor.submit(scan_grpc_service, host, port)
-            futures[future] = port
+            success, services = future.result()
+            if success:
+                found_services[f"{host}:{port}"] = services
 
-        # Pobieramy wyniki w miarę ich zakończenia
-        for future in futures:
-            port = futures[future]
-            try:
-                process_result(port, future)
-            except Exception as e:
-                print(f"Błąd podczas przetwarzania wyników dla {host}:{port}: {str(e)}", file=sys.stderr)
-
-    return results
-
-
-def scan_hosts(hosts: List[str], start_port: int, end_port: int, max_workers: int) -> Dict[str, List[GrpcServiceInfo]]:
-    """Skanuje wiele hostów, każdy z nich w zadanym zakresie portów"""
-    results = {}
-
-    for host in hosts:
-        print(f"\nRozpoczynam skanowanie {host} (porty {start_port}-{end_port})...")
-        start_time = time.time()
-
-        host_results = scan_port_range(host, start_port, end_port, max_workers)
-        results[host] = host_results
-
-        duration = time.time() - start_time
-        print(f"Zakończono skanowanie {host}: znaleziono {len(host_results)} usług gRPC ({duration:.2f}s)")
-
-    return results
-
-
-def print_summary(results: Dict[str, List[GrpcServiceInfo]]):
-    """Wyświetla podsumowanie wyników skanowania"""
-    print("\n=== Podsumowanie skanowania ===")
-
-    total_services = sum(len(host_results) for host_results in results.values())
-    print(f"Przeskanowano {len(results)} hostów, znaleziono {total_services} aktywnych usług gRPC")
-
-    for host, host_results in results.items():
-        if host_results:
-            print(f"\n{host}:")
-            for info in host_results:
-                print(f"  Port {info.port}:")
-                for service in info.services:
-                    print(f"    - {service}")
-
+    return found_services
 
 def main():
-    parser = argparse.ArgumentParser(description="Skaner usług gRPC")
-    parser.add_argument("--hosts", "-H", default="localhost",
-                        help="Lista hostów do skanowania (oddzielone przecinkami)")
-    parser.add_argument("--start", "-s", type=int, default=50000, help="Początkowy port zakresu")
-    parser.add_argument("--end", "-e", type=int, default=50100, help="Końcowy port zakresu")
-    parser.add_argument("--concurrency", "-c", type=int, default=50, help="Maksymalna liczba równoległych skanów")
-    args = parser.parse_args()
+    args = parse_args()
+    hosts = [h.strip() for h in args.hosts.split(',')]
+    port_range = list(range(args.start, args.end + 1))
 
-    hosts = [host.strip() for host in args.hosts.split(",")]
+    print(f"Scanning {len(hosts)} host(s) on ports {args.start}-{args.end}")
+    start_time = time.time()
 
-    if args.end < args.start:
-        print("Błąd: port końcowy musi być większy lub równy portowi początkowemu", file=sys.stderr)
-        sys.exit(1)
+    found_services = {}
+    scan_count = 0
 
-    results = scan_hosts(hosts, args.start, args.end, args.concurrency)
-    print_summary(results)
+    if args.continuous:
+        print("Continuous scanning enabled. Will scan until a service is found.")
+        while not found_services:
+            scan_count += 1
+            print(f"\nStarting scan iteration #{scan_count}...")
+            found_services = scan_once(hosts, port_range, args.concurrency)
 
+            if found_services:
+                print(f"Found gRPC services after {scan_count} iterations!")
+                break
+
+            print(f"No services found in iteration #{scan_count}. Continuing...")
+            time.sleep(1)  # Small delay between scans to avoid hammering the network
+    else:
+        found_services = scan_once(hosts, port_range, args.concurrency)
+
+    elapsed = time.time() - start_time
+
+    # Print summary
+    print("\n--- Scan Summary ---")
+    print(f"Scanned {len(hosts)} host(s) on {len(port_range)} port(s) in {elapsed:.2f} seconds")
+    if args.continuous:
+        print(f"Performed {scan_count} scan iterations")
+    print(f"Found {len(found_services)} gRPC server(s)")
+
+    for addr, services in found_services.items():
+        print(f"\n{addr}:")
+        for service in services:
+            print(f"  - {service}")
 
 if __name__ == "__main__":
     main()

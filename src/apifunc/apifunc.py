@@ -12,12 +12,6 @@ import grpc_tools.protoc
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
-# from apifunc.apifunc import (
-#     json_to_html,
-#     html_to_pdf,
-#     DynamicgRPCComponent,
-#     PipelineOrchestrator,
-# )
 
 class ModularPipelineInterface:
     """
@@ -91,10 +85,14 @@ class gRPCServiceGenerator:
         with open(proto_path, 'w') as f:
             f.write(proto_content)
 
+        # Get the project root directory (where google/protobuf/struct.proto is located)
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../'))
+        
         # Kompilacja proto
         protoc_args = [
             'grpc_tools.protoc',
             f'-I{output_dir}',
+            f'-I{project_root}',  # Add project root to include path to find google/protobuf/struct.proto
             f'--python_out={output_dir}',
             f'--grpc_python_out={output_dir}',
             proto_path
@@ -171,69 +169,4 @@ class PipelineOrchestrator:
         return current_data
 
 
-# Przykładowe komponenty transformacji
-def json_to_html(json_data: Dict) -> str:
-    """
-    Transformacja JSON do HTML
-    """
-    html_template = """
-    <html>
-    <body>
-        <h1>Raport</h1>
-        <table>
-            {% for key, value in data.items() %}
-            <tr>
-                <td>{{ key }}</td>
-                <td>{{ value }}</td>
-            </tr>
-            {% endfor %}
-        </table>
-    </body>
-    </html>
-    """
 
-    from jinja2 import Template
-    template = Template(html_template)
-    return template.render(data=json_data)
-
-
-def html_to_pdf(html_content: str) -> bytes:
-    """
-    Konwersja HTML do PDF
-    """
-    import weasyprint
-    return weasyprint.HTML(string=html_content).write_pdf()
-
-def example_usage():
-    """
-    Example usage of the pipeline orchestrator with components
-    """
-    # Create sample data
-    sample_data = {
-        "name": "Test Report",
-        "date": "2023-01-01",
-        "values": [1, 2, 3, 4, 5]
-    }
-
-    # Create pipeline with components
-    pipeline = PipelineOrchestrator()
-
-    # Add JSON to HTML component
-    json_html_component = DynamicgRPCComponent(json_to_html)
-    pipeline.add_component(json_html_component)
-
-    # Add HTML to PDF component
-    html_pdf_component = DynamicgRPCComponent(html_to_pdf)
-    pipeline.add_component(html_pdf_component)
-
-    # Execute pipeline
-    result = pipeline.execute_pipeline(sample_data)
-
-    # Save result to file
-    with open("output.pdf", "wb") as f:
-        f.write(result)
-
-    print("Pipeline execution completed. Output saved to output.pdf")
-
-if __name__ == "__main__":
-    example_usage()

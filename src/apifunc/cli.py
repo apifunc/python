@@ -1,92 +1,111 @@
-# cli.py
 import argparse
 import logging
-import os
 import sys
+import traceback
+import datetime
 
-from apifunc import DynamicgRPCComponent, PipelineOrchestrator, json_to_html
+# Set up logging
+logging.basicConfig(level=logging.DEBUG,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-# Add the directory containing apifunc.py to the Python path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
-
-
-
-def example_usage(output_file='raport.pdf', html_to_pdf_service=None):
-    """
-    Przykładowe użycie modularnego frameworka pipeline
-    """
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
-
-    sample_data = {
-        "nazwa": "Przykładowy Raport",
-        "wartość": 1000,
-        "kategoria": "Sprzedaż"
-    }
-
-    try:
-        # Utworzenie komponentów
-        json_to_html_component = DynamicgRPCComponent(json_to_html)
-        html_to_pdf_component = DynamicgRPCComponent(html_to_pdf_service)
-
-        # Utworzenie i konfiguracja potoku
-        pipeline = PipelineOrchestrator()
-        pipeline.add_component(json_to_html_component).add_component(html_to_pdf_component)
-
-        # Wykonanie potoku
-        result = pipeline.execute_pipeline(sample_data)
-        logger.info("Przetwarzanie zakończone sukcesem")
-
-        # Zapis pliku PDF
-        with open(output_file, 'wb') as f:
-            f.write(result)
-
-        logger.info(f"Plik PDF został zapisany: {output_file}")
-
-    except Exception as e:
-        logger.error(f"Błąd przetwarzania: {e}")
-
-
+try:
+    from apifunc import DynamicgRPCComponent, PipelineOrchestrator, json_to_html
+except ImportError as e:
+    logger.error(f"Import error: {e}")
+    sys.exit(1)
 
 def main():
-    """
-    Main function for the apifunc CLI.
-    """
-    parser = argparse.ArgumentParser(
-        prog='apifunc',
-        description='Command-line interface for the apifunc modular pipeline framework.'
-    )
+    parser = argparse.ArgumentParser(description='apifunc CLI tool')
+    subparsers = parser.add_subparsers(dest='command', help='Commands')
 
-    # Subparser for the 'run' command
-    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    # Add 'run' command
+    run_parser = subparsers.add_parser('run', help='Run the pipeline')
+    run_parser.add_argument('-o', '--output', required=True, help='Output file path')
 
-    # 'run' command
-    run_parser = subparsers.add_parser('run', help='Run the example pipeline')
-    run_parser.add_argument(
-        '-o', '--output',
-        default='raport.pdf',
-        help='Output file name for the generated PDF (default: raport.pdf)'
-    )
-
-    # Parse arguments
     args = parser.parse_args()
 
-    # Configure logging
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    logger = logging.getLogger(__name__)
-
-    # Execute the command
     if args.command == 'run':
-        logger.info("Starting the apifunc example pipeline...")
         try:
-            # Modify example_usage to accept output file name
-            example_usage(output_file=args.output)
-            logger.info(f"Pipeline completed successfully. Output saved to {args.output}")
+            logger.info("Starting the apifunc example pipeline...")
+
+            # Debug: Print available components
+            logger.debug(f"DynamicgRPCComponent: {DynamicgRPCComponent}")
+            logger.debug(f"PipelineOrchestrator: {PipelineOrchestrator}")
+
+            # Create pipeline components with detailed error handling
+            try:
+                # Define a transform function
+                def transform_data(data):
+                    # Process the data as needed
+                    return data
+
+                # Create the component with the required transform_func
+                grpc_component = DynamicgRPCComponent(transform_func=transform_data)
+                logger.debug(f"Created gRPC component: {grpc_component}")
+            except Exception as e:
+                logger.error(f"Error creating gRPC component: {e}")
+                logger.error(traceback.format_exc())
+                sys.exit(1)
+
+            try:
+                orchestrator = PipelineOrchestrator()
+                logger.debug(f"Created orchestrator: {orchestrator}")
+            except Exception as e:
+                logger.error(f"Error creating orchestrator: {e}")
+                logger.error(traceback.format_exc())
+                sys.exit(1)
+
+            # Add component to pipeline
+            try:
+                orchestrator.add_component(grpc_component)
+                logger.debug("Added gRPC component to orchestrator")
+            except Exception as e:
+                logger.error(f"Error adding component to pipeline: {e}")
+                logger.error(traceback.format_exc())
+                sys.exit(1)
+
+            # Execute pipeline
+            try:
+                # Create some initial data for the pipeline
+                initial_data = {
+                    "timestamp": str(datetime.datetime.now()),
+                    "source": "CLI",
+                    "version": "0.1.6",  # Based on your CHANGELOG.md
+                    "data": {}  # Add any specific data needed for your pipeline
+                }
+
+                result = orchestrator.execute_pipeline(initial_data)
+                logger.debug(f"Pipeline execution result: {result}")
+            except Exception as e:
+                logger.error(f"Error executing pipeline: {e}")
+                logger.error(traceback.format_exc())
+                sys.exit(1)
+
+            # Generate report
+            try:
+                html_content = json_to_html(result)
+                logger.debug("Generated HTML content")
+            except Exception as e:
+                logger.error(f"Error generating HTML: {e}")
+                logger.error(traceback.format_exc())
+                sys.exit(1)
+
+            # Save output
+            try:
+                with open(args.output, 'w') as f:
+                    f.write(html_content)
+                logger.info(f"Pipeline completed successfully. Output saved to {args.output}")
+            except Exception as e:
+                logger.error(f"Error saving output: {e}")
+                logger.error(traceback.format_exc())
+                sys.exit(1)
+
         except Exception as e:
-            logger.error(f"Error during pipeline execution: {e}")
+            logger.error(f"Błąd przetwarzania: {e}")
+            logger.error(traceback.format_exc())
     else:
         parser.print_help()
-
 
 if __name__ == "__main__":
     main()
