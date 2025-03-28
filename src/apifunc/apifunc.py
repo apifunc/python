@@ -1,269 +1,343 @@
 import os
 import sys
+import inspect
+import importlib
+import json
+from typing import Any, Dict, List, Optional, Callable, Type
+import logging
 import grpc
 from concurrent import futures
-import importlib
-import inspect
-import logging
-import subprocess
-from typing import Any, Callable, Dict, List, Optional
-import threading
+import grpc_tools.protoc
+from jinja2 import Template
+import weasyprint
+from google.protobuf.struct_pb2 import Struct
+import google.protobuf
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# Default directories for proto files and generated code
-DEFAULT_PROTO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "proto")
-DEFAULT_GENERATED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "generated")
-
-def generate_proto_for_function(func: Callable, proto_dir: Optional[str] = None) -> str:
-    """
-    Generate a .proto file for the given function
-
-    Args:
-        func: Function to generate proto for
-        proto_dir: Directory to store the proto file
-
-    Returns:
-        Path to the generated proto file
-    """
-    proto_dir = proto_dir or DEFAULT_PROTO_DIR
-    os.makedirs(proto_dir, exist_ok=True)
-
-    func_name = func.__name__
-    proto_file_path = os.path.join(proto_dir, f"{func_name}.proto")
-
-    # Get function signature
-    sig = inspect.signature(func)
-
-    # Generate proto content
-    proto_content = f"""syntax = "proto3";
-
-package apifunc;
-
-service {func_name.capitalize()}Service {{
-  rpc Execute ({func_name.capitalize()}Request) returns ({func_name.capitalize()}Response);
-}}
-
-message {func_name.capitalize()}Request {{
-"""
-
-    # Add parameters to request message
-    for i, (param_name, param) in enumerate(sig.parameters.items()):
-        proto_content += f"  string {param_name} = {i+1};\n"
-
-    proto_content += f"""}}
-
-message {func_name.capitalize()}Response {{
-  string result = 1;
-}}
-"""
-
-    # Write proto file
-    with open(proto_file_path, 'w') as f:
-        f.write(proto_content)
-
-    logger.info(f"Generated proto file: {proto_file_path}")
-    return proto_file_path
 
 class ApiFuncConfig:
-    """Configuration class for ApiFuncFramework"""
+    """Configuration class for ApiFuncFramework."""
 
-    def __init__(self,
-                 proto_dir: Optional[str] = None,
-                 generated_dir: Optional[str] = None,
-                 port: int = 50051,
-                 max_workers: int = 10):
+    def __init__(self, proto_dir: str = None, generated_dir: str = None, port: int = 50051):
         """
-        Initialize configuration with default values
+        Initialize ApiFuncConfig.
 
         Args:
-            proto_dir: Directory to store .proto files
-            generated_dir: Directory to store generated gRPC code
-            port: Default port for gRPC server
-            max_workers: Maximum number of workers for gRPC server
+            proto_dir (str): Directory for proto files.
+            generated_dir (str): Directory for generated code.
+            port (int): Port for the gRPC server.
         """
-        self.proto_dir = proto_dir or DEFAULT_PROTO_DIR
-        self.generated_dir = generated_dir or DEFAULT_GENERATED_DIR
+        self.proto_dir = proto_dir or os.path.abspath("./proto")
+        self.generated_dir = generated_dir or os.path.abspath("./generated")
         self.port = port
-        self.max_workers = max_workers
 
-        # Create directories if they don't exist
-        os.makedirs(self.proto_dir, exist_ok=True)
-        os.makedirs(self.generated_dir, exist_ok=True)
-
-        # Add generated directory to Python path for imports
-        if self.generated_dir not in sys.path:
-            sys.path.append(self.generated_dir)
-
-        logger.info(f"Proto files directory: {self.proto_dir}")
-        logger.info(f"Generated code directory: {self.generated_dir}")
 
 class ApiFuncFramework:
-    """Main framework class for ApiFuncFramework"""
+    """Framework for creating gRPC services from functions."""
 
-    def __init__(self, config: Optional[ApiFuncConfig] = None):
+    def __init__(self, config: ApiFuncConfig):
         """
-        Initialize the framework
+        Initialize ApiFuncFramework.
 
         Args:
-            config: Configuration object
+            config (ApiFuncConfig): Configuration object.
         """
-        self.config = config or ApiFuncConfig()
-        self.services = {}
-        self.server = None
-        self.components = []
+        self.config = config
+        self.registered_functions = {}
+        self.logger = logging.getLogger(__name__)
 
-    def register_function(self, func: Callable) -> None:
+    def register_function(self, func: Callable, proto_dir: str, generated_dir: str):
         """
-        Register a Python function as a gRPC service
+        Register a function to be exposed as a gRPC service.
 
         Args:
-            func: Function to register
+            func (Callable): The function to register.
+            proto_dir (str): Directory for proto files.
+            generated_dir (str): Directory for generated code.
         """
-        # Import here to avoid circular imports
-        from apifunc.components import DynamicgRPCComponent
+        self.logger.info(f"Registering function: {func.__module__}.{func.__name__}")
 
-        # Create a component for this function
-        component = DynamicgRPCComponent(
-            func,
-            proto_dir=self.config.proto_dir,
-            generated_dir=self.config.generated_dir
-        )
+        self.registered_functions[func.__name__] = func
+        self._generate_proto(func, proto_dir)
+        self._compile_proto(func, proto_dir, generated_dir)
 
-        # Register the component
-        self._register_grpc_component(component)
-        self.components.append(component)
-
-    def _register_grpc_component(self, component):
+    def _generate_proto(self, func: Callable, proto_dir: str):
         """
-        Register a gRPC component with the framework
+        Generate a .proto file for the given function.
 
         Args:
-            component: Component to register
+            func (Callable): The function to generate a .proto file for.
+            proto_dir (str): Directory for proto files.
         """
-        # Get function metadata
-        func_name = component.func.__name__
-        module_name = component.func.__module__
+        os.makedirs(proto_dir, exist_ok=True)
+        proto_file_path = os.path.join(proto_dir, f"{func.__name__}.proto")
+        self.logger.info(f"Generated proto file: {proto_file_path}")
 
-        logger.info(f"Registering function: {module_name}.{func_name}")
+        with open(proto_file_path, "w") as f:
+            f.write(self._generate_proto_content(func))
 
-        # Generate proto file for this function
-        proto_file = generate_proto_for_function(
-            component.func,
-            proto_dir=self.config.proto_dir
-        )
-
-        # Generate gRPC code from proto file
-        self._generate_grpc_code(proto_file)
-
-        # Register the service
-        self.services[func_name] = {
-            'component': component,
-            'proto_file': proto_file,
-        }
-
-    def _generate_grpc_code(self, proto_file: str) -> None:
+    def _generate_proto_content(self, func: Callable) -> str:
         """
-        Generate Python gRPC code from proto file
+        Generate the content of the .proto file.
 
         Args:
-            proto_file: Path to proto file
-        """
-        proto_filename = os.path.basename(proto_file)
-        proto_name = os.path.splitext(proto_filename)[0]
-
-        cmd = [
-            sys.executable, "-m", "grpc_tools.protoc",
-            f"--proto_path={self.config.proto_dir}",
-            f"--python_out={self.config.generated_dir}",
-            f"--grpc_python_out={self.config.generated_dir}",
-            proto_file
-        ]
-
-        try:
-            subprocess.check_call(cmd)
-            logger.info(f"Generated gRPC code for: {proto_name}")
-
-            # Create __init__.py if it doesn't exist
-            init_file = os.path.join(self.config.generated_dir, "__init__.py")
-            if not os.path.exists(init_file):
-                with open(init_file, 'w') as f:
-                    f.write("# Generated by ApiFuncFramework\n")
-
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to generate gRPC code: {e}")
-            raise
-
-    def start_server(self):
-        """Start the gRPC server in a background thread"""
-        server = self._create_server()
-        server_thread = threading.Thread(target=server.start)
-        server_thread.daemon = True  # Make thread exit when main thread exits
-        server_thread.start()
-        return server
-
-    def _create_service_class(self, service_name: str, component) -> type:
-        """
-        Create a service implementation class for the given component
-
-        Args:
-            service_name: Name of the service
-            component: Component implementation
+            func (Callable): The function to generate a .proto file for.
 
         Returns:
-            Service implementation class
+            str: The content of the .proto file.
         """
-        # Import the generated pb2 module
-        try:
-            pb2_module = importlib.import_module(f"{service_name}_pb2")
-            pb2_grpc_module = importlib.import_module(f"{service_name}_pb2_grpc")
-        except ImportError:
-            # Try with full path
-            base_dir = os.path.basename(self.config.generated_dir)
-            pb2_module = importlib.import_module(f"{base_dir}.{service_name}_pb2")
-            pb2_grpc_module = importlib.import_module(f"{base_dir}.{service_name}_pb2_grpc")
+        service_name = func.__name__.title().replace("_", "")
+        proto_content = f"""
+        syntax = "proto3";
+        package apifunc;
+        import "google/protobuf/struct.proto";
 
-        # Get the servicer class
-        servicer_class = getattr(pb2_grpc_module, f"{service_name.capitalize()}ServiceServicer")
+        service {service_name} {{
+            rpc Transform (google.protobuf.Struct) returns (google.protobuf.Struct) {{}}
+        }}
+        """
+        return proto_content
 
-        # Create a new class that inherits from the servicer class
-        class ServiceImplementation(servicer_class):
-            def Execute(self, request, context):
-                # Extract parameters from request
-                params = {}
-                for field in request.DESCRIPTOR.fields:
-                    params[field.name] = getattr(request, field.name)
+    def _compile_proto(self, func: Callable, proto_dir: str, generated_dir: str):
+        """
+        Compile the .proto file to generate gRPC code.
 
-                # Call the component's process method
-                result = component.process(params)
+        Args:
+            func (Callable): The function to compile the .proto file for.
+            proto_dir (str): Directory for proto files.
+            generated_dir (str): Directory for generated code.
+        """
+        proto_file_path = os.path.join(proto_dir, f"{func.__name__}.proto")
+        os.makedirs(generated_dir, exist_ok=True)
+        self.logger.info(f"Generated gRPC code for: {func.__name__}")
 
-                # Create response
-                response_class = getattr(pb2_module, f"{service_name.capitalize()}Response")
-                response = response_class(result=str(result))
+        # Get the path to the directory containing struct.proto
+        protobuf_include = os.path.dirname(google.protobuf.__path__[0])
 
+        protoc_args = [
+            'grpc_tools.protoc',
+            f'-I{proto_dir}',
+            f'-I{protobuf_include}',  # Add the include path for struct.proto
+            f'--python_out={generated_dir}',
+            f'--grpc_python_out={generated_dir}',
+            proto_file_path
+        ]
+
+        grpc_tools.protoc.main(protoc_args)
+
+    def _create_server(self):
+        """
+        Create a gRPC server.
+
+        Returns:
+            grpc.Server: The created gRPC server.
+        """
+        server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        return server
+
+    def start_server(self, func: Callable, proto_dir: str, generated_dir: str):
+        """
+        Start the gRPC server.
+
+        Args:
+            func (Callable): The function to start the server for.
+            proto_dir (str): Directory for proto files.
+            generated_dir (str): Directory for generated code.
+        """
+        self.logger.info(f"Starting server for: {func.__name__}")
+        server = self._create_server()
+        self._add_servicer_to_server(server, func, generated_dir)
+        server.add_insecure_port(f'[::]:{self.config.port}')
+        server.start()
+        return server
+
+    def _add_servicer_to_server(self, server, func: Callable, generated_dir: str):
+        """
+        Add the servicer to the gRPC server.
+
+        Args:
+            server (grpc.Server): The gRPC server.
+            func (Callable): The function to add the servicer for.
+            generated_dir (str): Directory for generated code.
+        """
+        # Add the generated directory to sys.path
+        sys.path.insert(0, generated_dir)
+
+        module_name = f"{func.__name__}_pb2_grpc"
+        module_path = os.path.join(generated_dir, f"{func.__name__}_pb2_grpc.py")
+        spec = importlib.util.spec_from_file_location(module_name, module_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+
+        servicer_class_name = f"{func.__name__.title().replace('_', '')}Servicer"
+        servicer_class = getattr(module, servicer_class_name)
+
+        add_to_server_func_name = f"add_{func.__name__.title().replace('_', '')}Servicer_to_server"
+        add_to_server_func = getattr(module, add_to_server_func_name)
+
+        class Servicer(servicer_class):
+            def Transform(self, request, context):
+                input_data = json.loads(request.SerializeToString())
+                output_data = func(input_data)
+                response = Struct()
+                response.update(output_data)
                 return response
 
-        return ServiceImplementation
+        add_to_server_func(Servicer(), server)
 
-# Main function for direct execution
-def main():
-    # Example usage
-    config = ApiFuncConfig()
-    framework = ApiFuncFramework(config)
 
-    # Example function to register
-    def hello(name):
-        return f"Hello, {name}!"
+class DynamicgRPCComponent:
+    """
+    Dynamic gRPC component for the pipeline.
+    """
 
-    framework.register_function(hello)
-    server = framework.start_server()
+    def __init__(self, transform_func: Callable, proto_dir: str, generated_dir: str):
+        """
+        Initialize the DynamicgRPCComponent.
 
-    try:
-        server.wait_for_termination()
-    except KeyboardInterrupt:
-        server.stop(0)
+        Args:
+            transform_func (Callable): The transformation function.
+            proto_dir (str): Directory for proto files.
+            generated_dir (str): Directory for generated code.
+        """
+        self.transform_func = transform_func
+        self.proto_dir = proto_dir
+        self.generated_dir = generated_dir
+        self.logger = logging.getLogger(__name__)
+        self.grpc_module = self._load_grpc_module()
 
-if __name__ == "__main__":
-    main()
+    def _load_grpc_module(self):
+        """
+        Load the generated gRPC module.
+
+        Returns:
+            module: The generated gRPC module.
+        """
+        # Add the generated directory to sys.path
+        sys.path.insert(0, self.generated_dir)
+
+        module_name = f"{self.transform_func.__name__}_pb2_grpc"
+        module_path = os.path.join(self.generated_dir, f"{self.transform_func.__name__}_pb2_grpc.py")
+        spec = importlib.util.spec_from_file_location(module_name, module_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    def process(self, data: Any) -> Any:
+        """
+        Process the data using the transformation function.
+
+        Args:
+            data (Any): The input data.
+
+        Returns:
+            Any: The processed data.
+        """
+        return self.transform_func(data)
+
+
+class PipelineOrchestrator:
+    """
+    Orchestrates the pipeline of components.
+    """
+
+    def __init__(self):
+        """
+        Initialize the PipelineOrchestrator.
+        """
+        self.components: List[DynamicgRPCComponent] = []
+
+    def add_component(self, component: DynamicgRPCComponent):
+        """
+        Add a component to the pipeline.
+
+        Args:
+            component (DynamicgRPCComponent): The component to add.
+        """
+        self.components.append(component)
+        return self
+
+    def execute_pipeline(self, initial_data: Any):
+        """
+        Execute the pipeline.
+
+        Args:
+            initial_data (Any): The initial data.
+
+        Returns:
+            Any: The result of the pipeline.
+        """
+        current_data = initial_data
+
+        for component in self.components:
+            current_data = component.process(current_data)
+
+        return current_data
+
+
+# Przykładowe komponenty transformacji
+def json_to_html(json_data: Dict) -> str:
+    """
+    Transformacja JSON do HTML
+    """
+    html_template = """
+    <html>
+    <body>
+        <h1>Raport</h1>
+        <table>
+            {% for key, value in data.items() %}
+            <tr>
+                <td>{{ key }}</td>
+                <td>{{ value }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </body>
+    </html>
+    """
+
+    template = Template(html_template)
+    return template.render(data=json_data)
+
+
+def html_to_pdf(html_content: str) -> bytes:
+    """
+    Konwersja HTML do PDF
+    """
+    return weasyprint.HTML(string=html_content).write_pdf()
+
+
+def example_usage(output_file: str = 'raport.pdf'):
+    """
+    Przykładowe użycie modularnego frameworka pipeline
+    """
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+
+    sample_data = {
+        "nazwa": "Przykładowy Raport",
+        "data": "2023-11-20",
+        "wartość": 123.45
+    }
+
+    # Tworzenie komponentów
+    json_to_html_component = DynamicgRPCComponent(json_to_html, proto_dir=os.path.abspath("./proto/json_html"),
+                                                  generated_dir=os.path.abspath("./generated/json_html"))
+    html_to_pdf_component = DynamicgRPCComponent(html_to_pdf, proto_dir=os.path.abspath("./proto/html_pdf"),
+                                                 generated_dir=os.path.abspath("./generated/html_pdf"))
+
+    # Tworzenie orkiestratora
+    pipeline = PipelineOrchestrator()
+
+    # Dodawanie komponentów do potoku
+    pipeline.add_component(json_to_html_component).add_component(html_to_pdf_component)
+
+    # Wykonanie potoku
+    result = pipeline.execute_pipeline(sample_data)
+
+    # Zapis do pliku
+    with open(output_file, 'wb') as f:
+        f.write(result)
+
+    logger.info(f"Raport zapisany do pliku: {output_file}")

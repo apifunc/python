@@ -28,7 +28,7 @@ python grpc-scan.py --hosts "localhost" --start 8000 --end 9000 --concurrency 50
 ```bash
 python grpc-scan.py --hosts "localhost" --verbose  --start 50051 --end 50052
 python grpc-scan.py --hosts "localhost" --verbose --stop-on-first --continuous --start 50051 --end 50052
-python grpc-scan.py --hosts "localhost" --verbose --stop-on-first --continuous --start 50051 --end 50052 --rate 50
+python grpc-scan.py --hosts "localhost" --verbose --stop-on-first --continuous --start 50051 --end 50054 --rate 50
 
  # Stop after finding the first gRPC service
 python grpc-scan.py --hosts "localhost" --start 8000 --end 9000 --stop-on-first
