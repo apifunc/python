@@ -4,7 +4,7 @@ import logging
 import os
 import sys
 
-from src.apifunc.apifunc import DynamicgRPCComponent, PipelineOrchestrator, json_to_html
+from apifunc import DynamicgRPCComponent, PipelineOrchestrator, json_to_html
 
 # Add the directory containing apifunc.py to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))

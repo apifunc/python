@@ -1,44 +1,113 @@
-import pytest
+import unittest
+import json
+import os
+import sys
+from pathlib import Path
+
+# Add the src directory to the path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
+
 from src.apifunc.apifunc import (
     json_to_html,
     html_to_pdf,
     DynamicgRPCComponent,
     PipelineOrchestrator,
+    ModularPipelineInterface
 )
 
-def test_json_to_html():
-    sample_data = {"key1": "value1", "key2": "value2"}
-    html_output = json_to_html(sample_data)
-    assert "<td>key1</td>" in html_output
-    assert "<td>value1</td>" in html_output
 
-def test_html_to_pdf():
-    html_content = "<html><body><h1>Test</h1></body></html>"
-    pdf_output = html_to_pdf(html_content)
-    assert isinstance(pdf_output, bytes)
-    assert len(pdf_output) > 0
+class TestModularPipelineInterface(unittest.TestCase):
+    def test_abstract_methods(self):
+        # Should raise NotImplementedError when instantiated directly
+        interface = ModularPipelineInterface()
+        with self.assertRaises(NotImplementedError):
+            interface.validate_input({})
+        with self.assertRaises(NotImplementedError):
+            interface.transform({})
 
-def test_dynamic_grpc_component():
-    def mock_transform(data):
-        return data.upper()
 
-    component = DynamicgRPCComponent(mock_transform)
-    input_data = "test"
-    output_data = component.transform(input_data)
-    assert output_data == "TEST"
+class TestJsonToHtml(unittest.TestCase):
+    def test_json_to_html_conversion(self):
+        test_data = {"name": "Test", "value": 123}
+        html_result = json_to_html(test_data)
 
-def test_pipeline_orchestrator():
-    def mock_transform_1(data):
-        return data + " step1"
+        # Check if the HTML contains the test data
+        self.assertIn("Test", html_result)
+        self.assertIn("123", html_result)
+        self.assertIn("<html>", html_result)
+        self.assertIn("</html>", html_result)
 
-    def mock_transform_2(data):
-        return data + " step2"
 
-    component1 = DynamicgRPCComponent(mock_transform_1)
-    component2 = DynamicgRPCComponent(mock_transform_2)
+class TestDynamicgRPCComponent(unittest.TestCase):
+    def test_component_initialization(self):
+        # Test that a component can be initialized with a transform function
+        component = DynamicgRPCComponent(json_to_html)
+        self.assertEqual(component.transform_func, json_to_html)
 
-    pipeline = PipelineOrchestrator()
-    pipeline.add_component(component1).add_component(component2)
+    def test_validate_input(self):
+        component = DynamicgRPCComponent(json_to_html)
+        self.assertTrue(component.validate_input({"test": "data"}))
+        self.assertTrue(component.validate_input("test string"))
+        self.assertTrue(component.validate_input([1, 2, 3]))
+        self.assertFalse(component.validate_input(123))
 
-    result = pipeline.execute_pipeline("start")
-    assert result == "start step1 step2"
+    def test_transform(self):
+        component = DynamicgRPCComponent(json_to_html)
+        test_data = {"name": "Test", "value": 123}
+        result = component.transform(test_data)
+        self.assertIsInstance(result, str)
+        self.assertIn("Test", result)
+
+
+class TestPipelineOrchestrator(unittest.TestCase):
+    def test_pipeline_execution(self):
+        # Create a simple pipeline with two components
+        def first_transform(data):
+            return data + " transformed once"
+
+        def second_transform(data):
+            return data + " and twice"
+
+        pipeline = PipelineOrchestrator()
+        pipeline.add_component(DynamicgRPCComponent(first_transform))
+        pipeline.add_component(DynamicgRPCComponent(second_transform))
+
+        result = pipeline.execute_pipeline("Initial data")
+        self.assertEqual(result, "Initial data transformed once and twice")
+
+    def test_json_to_html_pipeline(self):
+        test_data = {"name": "Test Report", "value": 123}
+
+        pipeline = PipelineOrchestrator()
+        pipeline.add_component(DynamicgRPCComponent(json_to_html))
+
+        result = pipeline.execute_pipeline(test_data)
+        self.assertIsInstance(result, str)
+        self.assertIn("Test Report", result)
+        self.assertIn("123", result)
+
+    def test_full_pipeline(self):
+        # This test requires weasyprint to be installed
+        try:
+            import weasyprint
+
+            test_data = {"name": "Test Report", "value": 123}
+
+            pipeline = PipelineOrchestrator()
+            pipeline.add_component(DynamicgRPCComponent(json_to_html))
+            pipeline.add_component(DynamicgRPCComponent(html_to_pdf))
+
+            result = pipeline.execute_pipeline(test_data)
+            self.assertIsInstance(result, bytes)
+            self.assertTrue(len(result) > 0)
+
+            # Optionally save the PDF for manual inspection
+            # with open("test_output.pdf", "wb") as f:
+            #     f.write(result)
+
+        except ImportError:
+            self.skipTest("weasyprint not installed, skipping PDF test")
+
+
+if __name__ == "__main__":
+    unittest.main()

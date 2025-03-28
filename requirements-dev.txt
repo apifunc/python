@@ -14,3 +14,4 @@ setuptools>=69.0.0
 setuptools_scm>=8.0.0
 wheel>=0.42.0
 nltk>=3.8.1
+grpc_tools

@@ -13,7 +13,7 @@ setup(
     long_description_content_type="text/markdown",
     author="apifunc Team",
     author_email="info@apifunc.com",
-    url="https://github.com/pi-func/python",
+    url="https://github.com/apifunc/python",
     install_requires=[
         "aiohttp>=3.8.0",
         "websockets>=10.0",

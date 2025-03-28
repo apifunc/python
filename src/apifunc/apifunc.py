@@ -204,5 +204,36 @@ def html_to_pdf(html_content: str) -> bytes:
     import weasyprint
     return weasyprint.HTML(string=html_content).write_pdf()
 
+def example_usage():
+    """
+    Example usage of the pipeline orchestrator with components
+    """
+    # Create sample data
+    sample_data = {
+        "name": "Test Report",
+        "date": "2023-01-01",
+        "values": [1, 2, 3, 4, 5]
+    }
+
+    # Create pipeline with components
+    pipeline = PipelineOrchestrator()
+
+    # Add JSON to HTML component
+    json_html_component = DynamicgRPCComponent(json_to_html)
+    pipeline.add_component(json_html_component)
+
+    # Add HTML to PDF component
+    html_pdf_component = DynamicgRPCComponent(html_to_pdf)
+    pipeline.add_component(html_pdf_component)
+
+    # Execute pipeline
+    result = pipeline.execute_pipeline(sample_data)
+
+    # Save result to file
+    with open("output.pdf", "wb") as f:
+        f.write(result)
+
+    print("Pipeline execution completed. Output saved to output.pdf")
+
 if __name__ == "__main__":
     example_usage()

@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.6] - 2025-03-28
+
+### Added
+- Changes in GRPC.md
+- Changes in grpc-scan.py
+- Changes in tests/test_simple.py
+
 ## [0.1.5] - 2025-03-28
 
 ### Added
