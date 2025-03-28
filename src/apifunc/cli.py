@@ -1,109 +1,62 @@
 import argparse
+import importlib
 import logging
+import os
 import sys
-import traceback
-import datetime
+from typing import List, Optional
 
-# Set up logging
-logging.basicConfig(level=logging.DEBUG,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-try:
-    from apifunc import DynamicgRPCComponent, PipelineOrchestrator, json_to_html
-except ImportError as e:
-    logger.error(f"Import error: {e}")
-    sys.exit(1)
+def run_command(args: argparse.Namespace) -> None:
+    """Run the pipeline with the specified components"""
+    try:
+        # Import framework components
+        from apifunc.apifunc import ApiFuncConfig, ApiFuncFramework
 
-def main():
-    parser = argparse.ArgumentParser(description='apifunc CLI tool')
-    subparsers = parser.add_subparsers(dest='command', help='Commands')
+        # Create framework instance
+        config = ApiFuncConfig(
+            proto_dir=args.proto_dir,
+            generated_dir=args.generated_dir,
+            port=args.port
+        )
+        framework = ApiFuncFramework(config)
 
-    # Add 'run' command
-    run_parser = subparsers.add_parser('run', help='Run the pipeline')
-    run_parser.add_argument('-o', '--output', required=True, help='Output file path')
-
-    args = parser.parse_args()
-
-    if args.command == 'run':
-        try:
-            logger.info("Starting the apifunc example pipeline...")
-
-            # Debug: Print available components
-            logger.debug(f"DynamicgRPCComponent: {DynamicgRPCComponent}")
-            logger.debug(f"PipelineOrchestrator: {PipelineOrchestrator}")
-
-            # Create pipeline components with detailed error handling
+        # Start server if requested
+        if args.server:
+            server = framework.start_server()
+            logger.info(f"Server running on port {config.port}. Press Ctrl+C to stop.")
             try:
-                # Define a transform function
-                def transform_data(data):
-                    # Process the data as needed
-                    return data
+                server.wait_for_termination()
+            except KeyboardInterrupt:
+                server.stop(0)
+                logger.info("Server stopped.")
 
-                # Create the component with the required transform_func
-                grpc_component = DynamicgRPCComponent(transform_func=transform_data)
-                logger.debug(f"Created gRPC component: {grpc_component}")
-            except Exception as e:
-                logger.error(f"Error creating gRPC component: {e}")
-                logger.error(traceback.format_exc())
-                sys.exit(1)
+    except ImportError as e:
+        logger.error(f"Import error: {e}")
+    except Exception as e:
+        logger.error(f"Error running pipeline: {e}", exc_info=True)
 
-            try:
-                orchestrator = PipelineOrchestrator()
-                logger.debug(f"Created orchestrator: {orchestrator}")
-            except Exception as e:
-                logger.error(f"Error creating orchestrator: {e}")
-                logger.error(traceback.format_exc())
-                sys.exit(1)
+def main(args: Optional[List[str]] = None) -> None:
+    """Main entry point for the CLI"""
+    parser = argparse.ArgumentParser(description="ApiFuncFramework CLI")
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
-            # Add component to pipeline
-            try:
-                orchestrator.add_component(grpc_component)
-                logger.debug("Added gRPC component to orchestrator")
-            except Exception as e:
-                logger.error(f"Error adding component to pipeline: {e}")
-                logger.error(traceback.format_exc())
-                sys.exit(1)
+    # Run command
+    run_parser = subparsers.add_parser("run", help="Run a pipeline")
+    run_parser.add_argument("--proto-dir", help="Directory for proto files")
+    run_parser.add_argument("--generated-dir", help="Directory for generated code")
+    run_parser.add_argument("--port", type=int, default=50051, help="Port for gRPC server")
+    run_parser.add_argument("--server", action="store_true", help="Start gRPC server")
+    run_parser.set_defaults(func=run_command)
 
-            # Execute pipeline
-            try:
-                # Create some initial data for the pipeline
-                initial_data = {
-                    "timestamp": str(datetime.datetime.now()),
-                    "source": "CLI",
-                    "version": "0.1.6",  # Based on your CHANGELOG.md
-                    "data": {}  # Add any specific data needed for your pipeline
-                }
+    # Parse arguments
+    parsed_args = parser.parse_args(args)
 
-                result = orchestrator.execute_pipeline(initial_data)
-                logger.debug(f"Pipeline execution result: {result}")
-            except Exception as e:
-                logger.error(f"Error executing pipeline: {e}")
-                logger.error(traceback.format_exc())
-                sys.exit(1)
-
-            # Generate report
-            try:
-                html_content = json_to_html(result)
-                logger.debug("Generated HTML content")
-            except Exception as e:
-                logger.error(f"Error generating HTML: {e}")
-                logger.error(traceback.format_exc())
-                sys.exit(1)
-
-            # Save output
-            try:
-                with open(args.output, 'w') as f:
-                    f.write(html_content)
-                logger.info(f"Pipeline completed successfully. Output saved to {args.output}")
-            except Exception as e:
-                logger.error(f"Error saving output: {e}")
-                logger.error(traceback.format_exc())
-                sys.exit(1)
-
-        except Exception as e:
-            logger.error(f"Błąd przetwarzania: {e}")
-            logger.error(traceback.format_exc())
+    # Run the appropriate command
+    if hasattr(parsed_args, "func"):
+        parsed_args.func(parsed_args)
     else:
         parser.print_help()
 

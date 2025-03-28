@@ -1,275 +1,300 @@
 import os
 import sys
-import inspect
-import importlib
-import json
-import socket
-from typing import Any, Dict, List, Optional, Callable, Type
-import logging
-
 import grpc
 from concurrent import futures
-import grpc_tools.protoc
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
+import importlib
+import inspect
+import logging
+import subprocess
+from typing import Any, Callable, Dict, List, Optional
 
 # Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-logger.addHandler(handler)
 
+# Default directories for proto files and generated code
+DEFAULT_PROTO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "proto")
+DEFAULT_GENERATED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "generated")
 
-class ModularPipelineInterface:
+def generate_proto_for_function(func: Callable, proto_dir: Optional[str] = None) -> str:
     """
-    Interfejs dla modularnych komponentów pipeline
+    Generate a .proto file for the given function
+
+    Args:
+        func: Function to generate proto for
+        proto_dir: Directory to store the proto file
+
+    Returns:
+        Path to the generated proto file
     """
+    proto_dir = proto_dir or DEFAULT_PROTO_DIR
+    os.makedirs(proto_dir, exist_ok=True)
 
-    def validate_input(self, input_data: Any) -> bool:
+    func_name = func.__name__
+    proto_file_path = os.path.join(proto_dir, f"{func_name}.proto")
+
+    # Get function signature
+    sig = inspect.signature(func)
+
+    # Generate proto content
+    proto_content = f"""syntax = "proto3";
+
+package apifunc;
+
+service {func_name.capitalize()}Service {{
+  rpc Execute ({func_name.capitalize()}Request) returns ({func_name.capitalize()}Response);
+}}
+
+message {func_name.capitalize()}Request {{
+"""
+
+    # Add parameters to request message
+    for i, (param_name, param) in enumerate(sig.parameters.items()):
+        proto_content += f"  string {param_name} = {i+1};\n"
+
+    proto_content += f"""}}
+
+message {func_name.capitalize()}Response {{
+  string result = 1;
+}}
+"""
+
+    # Write proto file
+    with open(proto_file_path, 'w') as f:
+        f.write(proto_content)
+
+    logger.info(f"Generated proto file: {proto_file_path}")
+    return proto_file_path
+
+class ApiFuncConfig:
+    """Configuration class for ApiFuncFramework"""
+
+    def __init__(self,
+                 proto_dir: Optional[str] = None,
+                 generated_dir: Optional[str] = None,
+                 port: int = 50051,
+                 max_workers: int = 10):
         """
-        Walidacja danych wejściowych
+        Initialize configuration with default values
+
+        Args:
+            proto_dir: Directory to store .proto files
+            generated_dir: Directory to store generated gRPC code
+            port: Default port for gRPC server
+            max_workers: Maximum number of workers for gRPC server
         """
-        raise NotImplementedError("Metoda validate_input musi być zaimplementowana")
+        self.proto_dir = proto_dir or DEFAULT_PROTO_DIR
+        self.generated_dir = generated_dir or DEFAULT_GENERATED_DIR
+        self.port = port
+        self.max_workers = max_workers
 
-    def transform(self, input_data: Any) -> Any:
+        # Create directories if they don't exist
+        os.makedirs(self.proto_dir, exist_ok=True)
+        os.makedirs(self.generated_dir, exist_ok=True)
+
+        # Add generated directory to Python path for imports
+        if self.generated_dir not in sys.path:
+            sys.path.append(self.generated_dir)
+
+        logger.info(f"Proto files directory: {self.proto_dir}")
+        logger.info(f"Generated code directory: {self.generated_dir}")
+
+class ApiFuncFramework:
+    """Main framework class for ApiFuncFramework"""
+
+    def __init__(self, config: Optional[ApiFuncConfig] = None):
         """
-        Transformacja danych
+        Initialize the framework
+
+        Args:
+            config: Configuration object
         """
-        raise NotImplementedError("Metoda transform musi być zaimplementowana")
-
-
-class gRPCServiceGenerator:
-    """
-    Generator usług gRPC dla komponentów pipeline
-    """
-
-    @staticmethod
-    def generate_proto_for_function(func: Callable) -> str:
-        """
-        Automatyczne generowanie definicji protobuf dla funkcji
-
-        :param func: Funkcja do analizy
-        :return: Treść pliku .proto
-        """
-        logger.info(f"Generating proto definition for function: {func.__name__}")
-        # Pobranie sygnnatury funkcji
-        signature = inspect.signature(func)
-        logger.debug(f"Function signature: {signature}")
-
-        # Nazwa usługi bazowana na nazwie funkcji
-        service_name = f"{func.__name__.capitalize()}Service"
-        logger.debug(f"Service name: {service_name}")
-
-        # Analiza parametrów wejściowych
-        input_type = "google.protobuf.Struct"
-        output_type = "google.protobuf.Struct"
-
-        # Generowanie definicji protobuf
-        proto_content = f"""
-        syntax = "proto3";
-
-        import "google/protobuf/struct.proto";
-
-        package modularpipeline;
-
-        service {service_name} {{
-            rpc Transform(google.protobuf.Struct) returns (google.protobuf.Struct) {{}}
-        }}
-        """
-        logger.debug(f"Generated proto content: {proto_content}")
-        return proto_content
-
-    @staticmethod
-    def compile_proto(proto_content: str, output_dir: str = 'generated_protos'):
-        """
-        Kompilacja wygenerowanego pliku proto
-
-        :param proto_content: Treść pliku proto
-        :param output_dir: Katalog wyjściowy
-        """
-        logger.info(f"Compiling proto file to directory: {output_dir}")
-        # Utworzenie katalogu
-        os.makedirs(output_dir, exist_ok=True)
-        logger.debug(f"Created output directory: {output_dir}")
-
-        # Zapis pliku proto
-        proto_path = os.path.join(output_dir, 'dynamic_service.proto')
-        with open(proto_path, 'w') as f:
-            f.write(proto_content)
-        logger.debug(f"Wrote proto file to: {proto_path}")
-
-        # Get the project root directory (where google/protobuf/struct.proto is located)
-        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../'))
-        logger.debug(f"Project root directory: {project_root}")
-
-        # Kompilacja proto
-        protoc_args = [
-            'grpc_tools.protoc',
-            f'-I{output_dir}',
-            f'-I{project_root}',  # Add project root to include path to find google/protobuf/struct.proto
-            f'--python_out={output_dir}',
-            f'--grpc_python_out={output_dir}',
-            proto_path
-        ]
-        logger.debug(f"Protoc arguments: {protoc_args}")
-
-        try:
-            result = grpc_tools.protoc.main(protoc_args)
-            if result == 0:
-                logger.info("Proto compilation successful")
-            else:
-                logger.error(f"Proto compilation failed with exit code: {result}")
-        except Exception as e:
-            logger.exception(f"Error during proto compilation: {str(e)}")
-
-
-class DynamicgRPCComponent(ModularPipelineInterface):
-    """
-    Dynamiczny komponent pipeline z interfejsem gRPC
-    """
-
-    def __init__(self, transform_func: Callable, port: int = None):
-        """
-        Inicjalizacja komponentu
-
-        :param transform_func: Funkcja transformacji
-        :param port: Określony port dla serwera gRPC (opcjonalny)
-        """
-        logger.info(f"Initializing dynamic gRPC component for function: {transform_func.__name__}")
-        self.transform_func = transform_func
-
-        # Użyj określonego portu lub znajdź dostępny, jeśli nie podano
-        if port is not None:
-            self.port = port
-            logger.info(f"Using specified port {self.port} for gRPC service: {transform_func.__name__}")
-        else:
-            self.port = self._get_available_port()
-            logger.info(f"Assigned random port {self.port} for gRPC service: {transform_func.__name__}")
-
-        # Initialize server
+        self.config = config or ApiFuncConfig()
+        self.services = {}
         self.server = None
+        self.components = []
 
-        # Generowanie usługi gRPC
-        proto_content = gRPCServiceGenerator.generate_proto_for_function(transform_func)
-        gRPCServiceGenerator.compile_proto(proto_content)
-        logger.info(f"gRPC service generated for function: {transform_func.__name__}")
+    def register_function(self, func: Callable) -> None:
+        """
+        Register a Python function as a gRPC service
 
-        # Start the gRPC server
-        self._start_grpc_server()
+        Args:
+            func: Function to register
+        """
+        # Import here to avoid circular imports
+        from apifunc.components import DynamicgRPCComponent
 
-    def _get_available_port(self):
-        """Find an available port to use"""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(('', 0))  # Bind to a random available port
-            return s.getsockname()[1]
+        # Create a component for this function
+        component = DynamicgRPCComponent(
+            func,
+            proto_dir=self.config.proto_dir,
+            generated_dir=self.config.generated_dir
+        )
 
-    def _start_grpc_server(self):
-        """Start a gRPC server for this component"""
+        # Register the component
+        self._register_grpc_component(component)
+        self.components.append(component)
+
+    def _register_grpc_component(self, component):
+        """
+        Register a gRPC component with the framework
+
+        Args:
+            component: Component to register
+        """
+        # Get function metadata
+        func_name = component.func.__name__
+        module_name = component.func.__module__
+
+        logger.info(f"Registering function: {module_name}.{func_name}")
+
+        # Generate proto file for this function
+        proto_file = generate_proto_for_function(
+            component.func,
+            proto_dir=self.config.proto_dir
+        )
+
+        # Generate gRPC code from proto file
+        self._generate_grpc_code(proto_file)
+
+        # Register the service
+        self.services[func_name] = {
+            'component': component,
+            'proto_file': proto_file,
+        }
+
+    def _generate_grpc_code(self, proto_file: str) -> None:
+        """
+        Generate Python gRPC code from proto file
+
+        Args:
+            proto_file: Path to proto file
+        """
+        proto_filename = os.path.basename(proto_file)
+        proto_name = os.path.splitext(proto_filename)[0]
+
+        cmd = [
+            sys.executable, "-m", "grpc_tools.protoc",
+            f"--proto_path={self.config.proto_dir}",
+            f"--python_out={self.config.generated_dir}",
+            f"--grpc_python_out={self.config.generated_dir}",
+            proto_file
+        ]
+
         try:
-            # Create a server
-            self.server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+            subprocess.check_call(cmd)
+            logger.info(f"Generated gRPC code for: {proto_name}")
 
-            # Add the service to the server
-            # Note: In a real implementation, you would need to import the generated
-            # service and add it to the server. For now, we'll just log it.
-            service_name = f"{self.transform_func.__name__.capitalize()}Service"
+            # Create __init__.py if it doesn't exist
+            init_file = os.path.join(self.config.generated_dir, "__init__.py")
+            if not os.path.exists(init_file):
+                with open(init_file, 'w') as f:
+                    f.write("# Generated by ApiFuncFramework\n")
 
-            # Bind to the port
-            server_address = f'[::]:{self.port}'
-            self.server.add_insecure_port(server_address)
-
-            # Start the server
-            self.server.start()
-
-            logger.info(f"Started gRPC server for {service_name} on port {self.port}")
-        except Exception as e:
-            logger.exception(f"Failed to start gRPC server for {self.transform_func.__name__}: {str(e)}")
-
-    def stop_server(self):
-        """Stop the gRPC server"""
-        if self.server:
-            logger.info(f"Stopping gRPC server for {self.transform_func.__name__} on port {self.port}")
-            self.server.stop(0)  # Stop immediately
-            self.server = None
-
-    def validate_input(self, input_data: Any) -> bool:
-        """
-        Domyślna walidacja danych wejściowych
-        """
-        is_valid = isinstance(input_data, (dict, str, list))
-        logger.debug(f"Input validation result: {is_valid} for data type: {type(input_data)}")
-        return is_valid
-
-    def transform(self, input_data: Any) -> Any:
-        """
-        Wywołanie funkcji transformacji
-        """
-        logger.info(f"Transforming data with function: {self.transform_func.__name__}")
-        logger.debug(f"Input data: {input_data}")
-
-        if not self.validate_input(input_data):
-            error_msg = f"Invalid input data type: {type(input_data)}"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-
-        try:
-            result = self.transform_func(input_data)
-            logger.debug(f"Transform result: {result}")
-            return result
-        except Exception as e:
-            logger.exception(f"Error during transformation: {str(e)}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to generate gRPC code: {e}")
             raise
 
-
-class PipelineOrchestrator:
-    """
-    Orkiestracja potoków przetwarzania z dynamicznym generowaniem usług gRPC
-    """
-
-    def __init__(self):
+    def start_server(self, port: Optional[int] = None) -> grpc.Server:
         """
-        Inicjalizacja orkiestratora
+        Start the gRPC server
+
+        Args:
+            port: Port to listen on (overrides config)
+
+        Returns:
+            The gRPC server instance
         """
-        self.components: List[DynamicgRPCComponent] = []
-        logger.info("Initialized Pipeline Orchestrator")
+        port = port or self.config.port
 
-    def add_component(self, component: DynamicgRPCComponent):
-        """
-        Dodanie komponentu do potoku
+        self.server = grpc.server(futures.ThreadPoolExecutor(max_workers=self.config.max_workers))
 
-        :param component: Komponent pipeline
-        """
-        self.components.append(component)
-        logger.info(f"Added component to pipeline: {component.transform_func.__name__} (gRPC port: {component.port})")
-        return self
-
-    def execute_pipeline(self, initial_data: Any):
-        """
-        Wykonanie potoku przetwarzania
-
-        :param initial_data: Dane początkowe
-        :return: Wynik końcowy
-        """
-        logger.info("Starting pipeline execution")
-        logger.debug(f"Initial data: {initial_data}")
-
-        current_data = initial_data
-
-        for i, component in enumerate(self.components):
-            logger.info(f"Executing component {i+1}/{len(self.components)}: {component.transform_func.__name__} (gRPC port: {component.port})")
+        # Add all registered services to the server
+        for service_name, service_info in self.services.items():
+            # Import the generated service module
+            module_name = f"{service_name}_pb2_grpc"
             try:
-                current_data = component.transform(current_data)
-                logger.debug(f"Component {i+1} output: {current_data}")
-            except Exception as e:
-                logger.error(f"Pipeline execution failed at component {i+1}: {str(e)}")
-                raise
+                service_module = importlib.import_module(module_name)
+            except ImportError:
+                # Try with full path
+                full_module_name = f"{os.path.basename(self.config.generated_dir)}.{module_name}"
+                service_module = importlib.import_module(full_module_name)
 
-        logger.info("Pipeline execution completed successfully")
-        return current_data
+            # Create service implementation
+            component = service_info['component']
+            service_class = self._create_service_class(service_name, component)
 
-    def shutdown(self):
-        """Shutdown all gRPC servers in the pipeline"""
-        logger.info("Shutting down all gRPC servers in the pipeline")
-        for component in self.components:
-            component.stop_server()
+            # Add service to server
+            getattr(service_module, f"add_{service_name.capitalize()}ServiceServicer_to_server")(
+                service_class(), self.server
+            )
+
+        self.server.add_insecure_port(f'[::]:{port}')
+        self.server.start()
+
+        logger.info(f"Server started on port {port}")
+        return self.server
+
+    def _create_service_class(self, service_name: str, component) -> type:
+        """
+        Create a service implementation class for the given component
+
+        Args:
+            service_name: Name of the service
+            component: Component implementation
+
+        Returns:
+            Service implementation class
+        """
+        # Import the generated pb2 module
+        try:
+            pb2_module = importlib.import_module(f"{service_name}_pb2")
+            pb2_grpc_module = importlib.import_module(f"{service_name}_pb2_grpc")
+        except ImportError:
+            # Try with full path
+            base_dir = os.path.basename(self.config.generated_dir)
+            pb2_module = importlib.import_module(f"{base_dir}.{service_name}_pb2")
+            pb2_grpc_module = importlib.import_module(f"{base_dir}.{service_name}_pb2_grpc")
+
+        # Get the servicer class
+        servicer_class = getattr(pb2_grpc_module, f"{service_name.capitalize()}ServiceServicer")
+
+        # Create a new class that inherits from the servicer class
+        class ServiceImplementation(servicer_class):
+            def Execute(self, request, context):
+                # Extract parameters from request
+                params = {}
+                for field in request.DESCRIPTOR.fields:
+                    params[field.name] = getattr(request, field.name)
+
+                # Call the component's process method
+                result = component.process(params)
+
+                # Create response
+                response_class = getattr(pb2_module, f"{service_name.capitalize()}Response")
+                response = response_class(result=str(result))
+
+                return response
+
+        return ServiceImplementation
+
+# Main function for direct execution
+def main():
+    # Example usage
+    config = ApiFuncConfig()
+    framework = ApiFuncFramework(config)
+
+    # Example function to register
+    def hello(name):
+        return f"Hello, {name}!"
+
+    framework.register_function(hello)
+    server = framework.start_server()
+
+    try:
+        server.wait_for_termination()
+    except KeyboardInterrupt:
+        server.stop(0)
+
+if __name__ == "__main__":
+    main()

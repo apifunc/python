@@ -46,7 +46,7 @@ def scan_port(host, port, verbose=False):
             # List services using reflection with timeout
             request = reflection_pb2.ServerReflectionRequest(list_services="")
 
-            # The correct method is ServerReflectionInfo, not ServerReflection
+            # The correct method is ServerReflectionInfo
             responses = stub.ServerReflectionInfo(iter([request]))
 
             # Only process the first response with a timeout
@@ -57,6 +57,45 @@ def scan_port(host, port, verbose=False):
                     break
                 # Break after first response or short timeout
                 break
+
+            return {
+                "host": host,
+                "port": port,
+                "services": services,
+                "reflection": True
+            }
+
+        except grpc.RpcError as e:
+            # Check if this is a gRPC server without reflection
+            status_code = e.code()
+            details = e.details()
+
+            if status_code == grpc.StatusCode.UNIMPLEMENTED and "Method not found" in details:
+                # This is likely a gRPC server without reflection support
+                return {
+                    "host": host,
+                    "port": port,
+                    "services": [],
+                    "reflection": False,
+                    "status": "GRPC_NO_REFLECTION"
+                }
+            elif status_code == grpc.StatusCode.UNAVAILABLE:
+                # Not a gRPC server or connection issue
+                if verbose:
+                    print(f"Connection issue with {host}:{port} - {details}")
+                return None
+            else:
+                # Other gRPC error, but still might be a gRPC server
+                if verbose:
+                    print(f"gRPC error on {host}:{port} - {status_code}: {details}")
+                return {
+                    "host": host,
+                    "port": port,
+                    "services": [],
+                    "reflection": False,
+                    "status": f"GRPC_ERROR_{status_code}",
+                    "details": details
+                }
         except Exception as e:
             if verbose:
                 print(f"Error listing services on {host}:{port} - {str(e)}")
@@ -66,15 +105,10 @@ def scan_port(host, port, verbose=False):
             return {
                 "host": host,
                 "port": port,
-                "services": ["<Unable to list services via reflection>"],
-                "error": str(e)
-            }
-
-        if services:
-            return {
-                "host": host,
-                "port": port,
-                "services": services
+                "services": [],
+                "reflection": False,
+                "status": "UNKNOWN_ERROR",
+                "details": str(e)
             }
 
     except Exception as e:
@@ -184,15 +218,34 @@ def main():
         if found_services:
             print("\nFound gRPC services:")
             for service in found_services:
-                print(f"\n{service['host']}:{service['port']}")
-                if "error" in service:
-                    print(f"  Error: {service['error']}")
-                for svc in service['services']:
-                    print(f"  - {svc}")
+                host = service["host"]
+                port = service["port"]
 
-            # If we found services and stop_on_first is enabled, we're done
-            if args.stop_on_first:
-                break
+                print(f"\n{host}:{port}")
+
+                if service.get("reflection", False):
+                    if service["services"]:
+                        print("  Services available via reflection:")
+                        for svc in service["services"]:
+                            print(f"  - {svc}")
+                    else:
+                        print("  No services found via reflection")
+                else:
+                    status = service.get("status", "UNKNOWN")
+                    if status == "GRPC_NO_REFLECTION":
+                        print("  ✓ gRPC server detected")
+                        print("  ✗ Reflection not supported")
+                        print("  ℹ To list services, you need the .proto files or the server needs to support reflection")
+                    elif status.startswith("GRPC_ERROR_"):
+                        print(f"  ✓ gRPC server detected")
+                        print(f"  ✗ Error: {service.get('details', 'Unknown error')}")
+                    else:
+                        print(f"  ✓ gRPC server detected")
+                        print(f"  ✗ Unable to list services: {service.get('details', 'Unknown error')}")
+
+                # If we found services and stop_on_first is enabled, we're done
+                if args.stop_on_first:
+                    break
         else:
             print("\nNo gRPC services found.")
 
